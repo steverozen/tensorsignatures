@@ -135,3 +135,7 @@ dmypy.json
 .DS_Store
 
 Dockerfile-dev
+
+# pixi environments
+.pixi/*
+!.pixi/config.toml

@@ -1,0 +1,33 @@
+[workspace]
+authors = ["Steven G. Rozen <steverozen@pm.me>"]
+channels = ["conda-forge", "bioconda"]
+name = "tensorsignatures"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[tasks]
+ts = "tensorsignatures"
+
+[dependencies]
+python = "3.7.*"
+pip = "*"
+# Scientific stack from conda (matches upstream pins from requirements.txt)
+numpy = ">=1.14.5,<1.17"
+scipy = "==1.3.2"
+pandas = "==0.25.3"
+h5py = "==2.10.0"
+scikit-learn = "==0.21.3"
+matplotlib-base = ">=3.0,<3.2"
+tqdm = "==4.39.0"
+click = "==7.0"
+# TF 1.15's generated _pb2.py needs protobuf <= 3.20.x (see google/protobuf #10051).
+protobuf = "<3.21"
+# Stage B tooling
+bcftools = "*"
+pyarrow = "*"
+
+[pypi-dependencies]
+# TF 1.15 only ships on PyPI (no conda-forge build); manylinux2010 cp37 wheel.
+tensorflow = "==1.15.0"
+# Install tensorsignatures itself in editable mode from the local clone.
+tensorsignatures = { path = ".", editable = true }
