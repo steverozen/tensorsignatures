@@ -49,10 +49,46 @@ The model expects an HDF5 containing an SNV count tensor of shape `(3, 3, t1+1, 
 
 ## VCF preprocessing
 
-Producing the input HDF5 from VCFs is done by the separate `sagar87/tensorsignatures-data` docker image (R 3.4 + `VariantAnnotation` + `rhdf5`), not by this repo. `scripts/merge_breast50_vcfs.sh` is a Steve-specific helper that merges HMF PURPLE SNV + indel VCFs into the 8-column PASS-only format `processVcf.R` (inside that docker image) expects. Run as `pixi run bash scripts/merge_breast50_vcfs.sh`.
+Producing the input HDF5 from VCFs is done by the separate `sagar87/tensorsignatures-data` docker image (R 3.4 + `VariantAnnotation` + `rhdf5`), not by this repo. The image's entrypoint runs `Rscript /usr/src/app/process.R`, which expects all positional args (VCF basenames + the output HDF5 name) to be relative to `/usr/src/app/mount`, so the bind mount and the output filename must both live in the same host dir.
+
+**Input convention — purple-only.** Use only the `*.purple.somatic.vcf.gz` files from HMF. Those already contain SNVs, indels, and MNVs in valid VCF format. The companion `*.annotated.indel.vcf.gz` files are a custom annotated-TSV variant of the same indels and would double-count if combined.
+
+Helper scripts under `scripts/`:
+
+- `merge_breast50_vcfs.sh` — original sequential merger (kept for reproducibility of the 50-sample refit).
+- `merge_one_vcf.sh` — per-sample purple-only PASS-filter + bgzip + tabix.
+- `merge_vcfs_parallel.sh` — xargs `-P` wrapper around `merge_one_vcf.sh`; parameterised by `$SAMPLE_IDS`, `$OUT_DIR`, `$NPAR`.
+- `processVcf_parallel.sh` — chunks the merged VCFs and runs N concurrent docker containers, each invoking `process.R` on ~100 samples; output chunk HDF5s land in `$OUT_DIR`.
+- `merge_chunks.py` — concatenates per-chunk HDF5s (`SNVR`, `INDELS`, `MNV`) along the samples axis into one consolidated HDF5 ready for `tensorsignatures prep`.
+- `sanity_check_refit.py` — loads a refit pickle and writes a stacked-bar exposure PNG.
+- `submit_refit.sbatch`, `submit_train_array.sbatch` — DCC SLURM templates for CPU refit and GPU de novo training (rank × seed sweep).
+- `aggregate_and_bic.py` — post-hoc rank selection via BIC plus cosine similarity of discovered SNV spectra to PCAWG TS01-TS20.
+- `build_dcc_sif.sh` — builds an Apptainer SIF from the upstream docker image for DCC.
+
+Run any of these inside the pixi env (e.g. `pixi run bash scripts/merge_vcfs_parallel.sh`).
 
 ## Conventions to preserve
 
 - Keep TF 1.x APIs (`tf.variable_scope`, `tf.placeholder`, sessions). Do not migrate to TF 2.x style.
 - Python 3.7 syntax only.
 - Click 7.x (not 8.x) decorator style.
+
+## Project status (2026-05-26)
+
+End-to-end **refit** on 50 HMF breast samples is working (see
+`~/MEGA/test_50_breast_ca_extended/vcf/breast50.refit.{pkl,exposures.png}`).
+Dominant signatures TS12 (APOBEC), TS19 (HRD), TS04, TS15 (MMRD), as expected for BRCA.
+
+**Discovery pipeline (Stage F → Stage G), in progress:**
+
+- Cohort: all 4233 HMF samples from `~/MEGA/important_mut_sig_data/fmh-unfiltered_vcfs/` (sample-ID list at `~/MEGA/hmf_all/hmf_all_ids.txt`).
+- VCF merge: done. 4233 purple-only PASS VCFs at `~/MEGA/hmf_all/vcf/`. Wall time ~17 min at NPAR=8.
+- processVcf.R via Docker: **18/43 chunks done** (chunks 0-17), at `~/MEGA/hmf_all/chunks/chunk_NNN.h5`. Paused. Per-chunk wall time is highly variable (6 min to 7+ h depending on per-sample mutation count); RAM-bound (each container holds ~2 GB Constants.RData). Steve asked to drop to NPAR=1 because earlier NPAR=4 was straining memory.
+- Resume path: `cd ~/github/tensorsignatures && VCF_DIR=$HOME/MEGA/hmf_all/vcf OUT_DIR=$HOME/MEGA/hmf_all/chunks CHUNK_SIZE=100 NPAR=1 bash scripts/processVcf_parallel.sh`. The script's skip-if-exists check picks up the 18 done; chunks 018-042 will then run sequentially.
+- After all 43 chunks land: `pixi run python scripts/merge_chunks.py --chunks ~/MEGA/hmf_all/chunks --out ~/MEGA/hmf_all/hmf_all.h5`, then `pixi run tensorsignatures prep ~/MEGA/hmf_all/hmf_all.h5 ~/MEGA/hmf_all/hmf_all.tsdata.h5`.
+- DCC discovery: SLURM template `scripts/submit_train_array.sbatch` (rank sweep 10/12/14/16/18/20/22/25 × 10 seeds = 80 GPU jobs on `gpu-common`). Aggregation + BIC + PCAWG-cosine in `scripts/aggregate_and_bic.py`. Both untested on DCC; GPU access confirmed but CUDA / TF-GPU 1.15 compatibility still needs verification on a real GPU node.
+
+**Open issues / TODO:**
+
+- TF-GPU 1.15 needs CUDA 10.0 + cuDNN 7.4; DCC's current drivers may not provide that. Fallback is an Apptainer SIF from `nvcr.io/nvidia/tensorflow:19.12-tf1-py3`.
+- Cancer-type metadata (CPCT-ID → tissue) not yet available; discovery proceeds without it. Interpretation will be by spectra + cosine similarity to PCAWG only until metadata lands.
